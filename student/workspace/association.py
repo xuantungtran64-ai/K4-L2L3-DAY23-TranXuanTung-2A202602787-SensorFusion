@@ -11,58 +11,56 @@ from typing import Any
 from typing import Sequence
 
 import numpy as np
+from scipy.stats import chi2
 
 # vi: from fusion_lab.workspace_support import get_tracking_params
 # vi: from fusion_lab.workspace_loader import load_workspace_module
-# vi: kalman = load_workspace_module("kalman")  # không dùng `import kalman`
+from fusion_lab.workspace_support import get_tracking_params
+from fusion_lab.workspace_loader import load_workspace_module
+
+kalman = load_workspace_module("kalman")
 
 
 def mahalanobis_distance(track: Any, meas: Any) -> float:
-    """Return squared Mahalanobis distance between a track and a measurement.
-
-    Args:
-        track: Track with ``x``, ``P``.
-        meas: Measurement with ``sensor``.
-
-    Returns:
-        Scalar squared Mahalanobis distance.
-    """
-    # vi: TODO Part F — H = meas.sensor.get_H(track.x);
-    # vi: gamma = kalman.innovation(...); S = kalman.innovation_covariance(...);
-    # vi: return gamma.T @ inv(S) @ gamma (float scalar).
-    raise NotImplementedError("TODO: implement mahalanobis_distance")
+    """Return squared Mahalanobis distance between a track and a measurement."""
+    H = meas.sensor.get_H(track.x)
+    gamma = kalman.innovation(track.x, meas)
+    S = kalman.innovation_covariance(track.P, meas, H)
+    dist_sq = float((gamma.T @ np.linalg.inv(S) @ gamma).item())
+    return dist_sq
 
 
 def chi2_gate(mhd_sq: float, sensor: Any) -> bool:
-    """Return True if squared Mahalanobis distance lies inside the chi-square gate.
-
-    Args:
-        mhd_sq: Squared Mahalanobis distance.
-        sensor: Sensor with ``dim_meas``.
-
-    Returns:
-        True if inside gate.
-    """
-    # vi: TODO Part F — ngưỡng chi2.ppf(gating_threshold, sensor.dim_meas) từ params.
-    raise NotImplementedError("TODO: implement chi2_gate")
+    """Return True if squared Mahalanobis distance lies inside the chi-square gate."""
+    params = get_tracking_params()
+    threshold = chi2.ppf(params.gating_threshold, sensor.dim_meas)
+    return mhd_sq < threshold
 
 
 def association_cost_matrix(
     track_list: Sequence[Any], meas_list: Sequence[Any]
 ) -> np.matrix:
-    """Build gated costs, checking each sensor's visibility before projection.
-
-    Args:
-        track_list: Active tracks.
-        meas_list: Measurements for this sensor pass.
-
-    Returns:
-        Cost matrix; ``np.inf`` for invisible tracks or rejected chi-square gates.
-        Invisible pairs must never call the Mahalanobis/projection helpers.
-    """
-    # vi: TODO Part F — khởi tạo toàn inf; kiểm tra meas.sensor.in_fov(track.x)
-    # vi: trước MHD (camera sau lưng/độ sâu 0 không được chiếu); rồi kiểm tra chi2.
-    raise NotImplementedError("TODO: implement association_cost_matrix")
+    """Build gated costs, checking each sensor's visibility before projection."""
+    num_tracks = len(track_list)
+    num_meas = len(meas_list)
+    
+    cost_matrix = np.full((num_tracks, num_meas), np.inf)
+    
+    if num_meas == 0 or num_tracks == 0:
+        return np.matrix(cost_matrix)
+        
+    sensor = meas_list[0].sensor
+    
+    for i, track in enumerate(track_list):
+        if not sensor.in_fov(track.x):
+            continue
+            
+        for j, meas in enumerate(meas_list):
+            mhd_sq = mahalanobis_distance(track, meas)
+            if chi2_gate(mhd_sq, sensor):
+                cost_matrix[i, j] = mhd_sq
+                
+    return np.matrix(cost_matrix)
 
 
 def pick_next_pair(
@@ -70,20 +68,31 @@ def pick_next_pair(
     unassigned_tracks: Sequence[Any],
     unassigned_meas: Sequence[Any],
 ) -> tuple[Any, Any, np.matrix, list[Any], list[Any]]:
-    """Pick the minimum-cost track/measurement pair and shrink the association problem.
-
-    Args:
-        association_matrix: Current cost matrix.
-        unassigned_tracks: Track objects still free.
-        unassigned_meas: Measurement objects still free.
-
-    Returns:
-        Tuple (track, meas, new_matrix, remaining_tracks, remaining_meas).
-        If no finite pair exists, return np.nan for track and meas and retain both lists.
-    """
-    # vi: TODO Part F — chỉ lấy cặp hữu hạn nhỏ nhất rồi xóa hàng/cột tương ứng;
-    # vi: ma trận rỗng/toàn inf: trả np.nan, np.nan và giữ các danh sách chưa ghép.
-    raise NotImplementedError("TODO: implement pick_next_pair")
+    """Pick the minimum-cost track/measurement pair and shrink the association problem."""
+    if association_matrix.size == 0 or np.all(np.isinf(association_matrix)):
+        return np.nan, np.nan, association_matrix, list(unassigned_tracks), list(unassigned_meas)
+        
+    # Find minimum value index
+    min_idx = np.unravel_index(np.argmin(association_matrix), association_matrix.shape)
+    i, j = min_idx
+    
+    if np.isinf(association_matrix[i, j]):
+        return np.nan, np.nan, association_matrix, list(unassigned_tracks), list(unassigned_meas)
+        
+    track = unassigned_tracks[i]
+    meas = unassigned_meas[j]
+    
+    new_tracks = list(unassigned_tracks)
+    new_tracks.pop(i)
+    
+    new_meas = list(unassigned_meas)
+    new_meas.pop(j)
+    
+    # Delete row i and column j
+    new_matrix = np.delete(association_matrix, i, axis=0)
+    new_matrix = np.delete(new_matrix, j, axis=1)
+    
+    return track, meas, np.matrix(new_matrix), new_tracks, new_meas
 
 
 def associate_and_update(
@@ -92,21 +101,26 @@ def associate_and_update(
     filter_obj: Any,
     sensor: Any,
 ) -> None:
-    """Greedy association loop with EKF updates and track management.
-
-    Args:
-        manager: Track manager (``track_list``, ``manage_tracks``, ...).
-        meas_list: Lidar or camera measurements for this frame pass.
-        filter_obj: Filter with ``predict`` / ``update``.
-        sensor: Explicit lidar/camera pass sensor, including empty measurement frames.
-
-    Returns:
-        None; updates tracks in place and always finishes the lifecycle pass.
-        Visibility is handled in the cost matrix, before pair removal. Camera
-        updates refine state only; lidar hits alone increase existence scores.
-    """
-    # vi: TODO Part F — kể cả meas_list rỗng, vẫn gọi quản lý cuối lượt.
-    # vi: Ghép cặp hữu hạn, filter_obj.update rồi handle_updated_track(track, sensor).
-    # vi: Không bỏ qua FOV sau khi đã xóa cặp khỏi danh sách chưa ghép.
-    # vi: Kết thúc manager.manage_tracks(unassigned_tracks, unassigned_meas, sensor).
-    raise NotImplementedError("TODO: implement associate_and_update")
+    """Greedy association loop with EKF updates and track management."""
+    unassigned_tracks = list(manager.track_list)
+    unassigned_meas = list(meas_list)
+    
+    if not unassigned_tracks or not unassigned_meas:
+        manager.manage_tracks(unassigned_tracks, unassigned_meas, sensor)
+        return
+        
+    cost_matrix = association_cost_matrix(unassigned_tracks, unassigned_meas)
+    
+    while True:
+        track, meas, cost_matrix, unassigned_tracks, unassigned_meas = pick_next_pair(
+            cost_matrix, unassigned_tracks, unassigned_meas
+        )
+        
+        # Check if np.nan was returned
+        if isinstance(track, float) and np.isnan(track):
+            break
+            
+        filter_obj.update(track, meas)
+        manager.handle_updated_track(track, sensor)
+        
+    manager.manage_tracks(unassigned_tracks, unassigned_meas, sensor)
