@@ -7,8 +7,8 @@
 - Họ tên: Trần Xuân Tùng
 - MSSV: 2A202602787
 - Email: Không
-- Link repo (fork): https://github.com/TranXuanTung/K4-L2L3-DAY23-TranXuanTung-2A202602787-SensorFusion
-- Commit hash nộp (`git rev-parse HEAD`): 7959306139f9de2f061d48d07e8173fe703d9e2f
+- Link repo (fork): https://github.com/xuantungtran64-ai/K4-L2L3-DAY23-TranXuanTung-2A202602787-SensorFusion
+- Commit hash nộp (`git rev-parse HEAD`): (sẽ lấy từ commit cuối cùng sau khi push)
 
 ## Tóm tắt kết quả
 
